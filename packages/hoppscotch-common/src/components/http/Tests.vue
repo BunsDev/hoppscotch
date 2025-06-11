@@ -38,7 +38,14 @@
     </div>
     <div class="flex flex-1 border-b border-dividerLight">
       <div class="w-2/3 border-r border-dividerLight h-full relative">
-        <div ref="testScriptEditor" class="h-full absolute inset-0"></div>
+        <!-- <div ref="testScriptEditor" class="h-full absolute inset-0"></div> -->
+        <vue-monaco-editor
+          v-model:value="testScript"
+          theme="vs-dark"
+          language="typescript"
+          :options="MONACO_EDITOR_OPTIONS"
+          @mount="onEditorMounted"
+        />
       </div>
       <div
         class="z-[9] sticky top-upperTertiaryStickyFold h-full min-w-[12rem] max-w-1/3 flex-shrink-0 overflow-auto overflow-x-auto bg-primary p-4"
@@ -97,6 +104,10 @@ import { useReadonlyStream } from "~/composables/stream"
 import AiexperimentsModifyTestScriptModal from "@components/aiexperiments/ModifyTestScriptModal.vue"
 import { invokeAction } from "~/helpers/actions"
 
+import { VueMonacoEditor } from "@guolao/vue-monaco-editor"
+import * as monaco from "monaco-editor"
+import { getTestScriptCompletions, performTestLinting } from "~/helpers/tern"
+
 const t = useI18n()
 
 const props = defineProps<{
@@ -106,6 +117,12 @@ const emit = defineEmits(["update:modelValue"])
 const testScript = useVModel(props, "modelValue", emit)
 const testScriptEditor = ref<any | null>(null)
 const WRAP_LINES = useNestedSetting("WRAP_LINES", "httpTest")
+
+const MONACO_EDITOR_OPTIONS = {
+  automaticLayout: true,
+  formatOnType: true,
+  formatOnPaste: true,
+}
 
 useCodemirror(
   testScriptEditor,
@@ -122,6 +139,56 @@ useCodemirror(
     contextMenuEnabled: false,
   })
 )
+
+const onEditorMounted = (editor: monaco.editor.IStandaloneCodeEditor) => {
+  const model = editor.getModel()
+  if (!model) return
+
+  editor.onDidChangeModelContent(async () => {
+    const value = model.getValue()
+    const lints = await performTestLinting(value)
+
+    const markers = lints.map((lint: any) => ({
+      severity: monaco.MarkerSeverity.Error,
+      message: lint.message,
+      startLineNumber: lint.from.line + 1,
+      startColumn: lint.from.ch + 1,
+      endLineNumber: lint.to.line + 1,
+      endColumn: lint.to.ch + 1,
+    }))
+
+    monaco.editor.setModelMarkers(model, "owner", markers)
+  })
+}
+
+// Register autocomplete
+;["javascript", "typescript"].forEach((lang) => {
+  monaco.languages.registerCompletionItemProvider(lang, {
+    triggerCharacters: [".", "(", '"', "'", "/", " "],
+    provideCompletionItems: async (model, position) => {
+      const code = model.getValue()
+      const row = position.lineNumber - 1
+      const col = position.column - 1
+
+      const result = await getTestScriptCompletions(code, row, col)
+
+      return {
+        suggestions: result.completions.map((c: any) => ({
+          label: c.name,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: c.name,
+          detail: c.type,
+          range: {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: position.column,
+            endColumn: position.column,
+          },
+        })),
+      }
+    },
+  })
+})
 
 const useSnippet = (script: string) => {
   testScript.value += script
